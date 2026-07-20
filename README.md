@@ -31,6 +31,34 @@ uvicorn src.main:app --reload
 http://127.0.0.1:8000
 ```
 
+### Docker 复现
+
+构建镜像：
+
+```bash
+docker build -t ai-practice-api .
+```
+
+运行容器：
+
+```bash
+docker run --env-file .env -p 8000:8000 ai-practice-api
+```
+
+验证服务：
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+预期返回：
+
+```json
+{
+  "status": "ok"
+}
+```
+
 ## 5. 接口调用示例
 
 ### 健康检查
