@@ -194,7 +194,11 @@ _LOADERS: dict[str, Callable[[Path], list[DocumentChunk]]] = {
 
 
 # 根据文件扩展名加载单个受支持文档。
-def load_document(path: str | Path) -> list[DocumentChunk]:
+def load_document(
+    path: str | Path,
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+) -> list[DocumentChunk]:
     """Load one supported document and return its non-empty content chunks."""
     document_path = Path(path)
     if not document_path.exists():
@@ -210,7 +214,7 @@ def load_document(path: str | Path) -> list[DocumentChunk]:
             f"Unsupported document type '{extension or '<none>'}'. "
             f"Supported types: {supported}"
         )
-    return loader(document_path)
+    return split_chunks(loader(document_path), chunk_size, chunk_overlap)
 
 
 # 按稳定顺序查找目录中的受支持文档。
@@ -224,7 +228,11 @@ def _document_paths(directory: Path) -> Iterable[Path]:
 
 
 # 递归加载目录中的全部受支持文档。
-def load_directory(path: str | Path) -> list[DocumentChunk]:
+def load_directory(
+    path: str | Path,
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+) -> list[DocumentChunk]:
     """Recursively load all supported documents in a directory."""
     directory = Path(path)
     if not directory.exists():
@@ -234,5 +242,76 @@ def load_directory(path: str | Path) -> list[DocumentChunk]:
 
     chunks: list[DocumentChunk] = []
     for document_path in _document_paths(directory):
-        chunks.extend(load_document(document_path))
+        chunks.extend(load_document(document_path, chunk_size, chunk_overlap))
     return chunks
+
+
+def _validate_split_parameters(chunk_size: int, chunk_overlap: int) -> None:
+    """校验文本块长度和重叠长度是否合法。"""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than 0")
+    if chunk_overlap < 0:
+        raise ValueError("chunk_overlap must be greater than or equal to 0")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+
+def _find_split_end(text: str, start: int, limit: int, chunk_overlap: int) -> int:
+    """在字符上限内查找最后一个优先切分边界。"""
+    minimum_end = start + chunk_overlap + 1
+    paragraph_ends = [
+        index + 2
+        for index in range(start, limit - 1)
+        if text.startswith("\n\n", index) and index + 2 >= minimum_end
+    ]
+    if paragraph_ends:
+        return paragraph_ends[-1]
+    newline_ends = [
+        index + 1
+        for index in range(start, limit)
+        if text[index] == "\n" and index + 1 >= minimum_end
+    ]
+    if newline_ends:
+        return newline_ends[-1]
+    sentence_ends = [
+        index + 1
+        for index in range(start, limit)
+        if text[index] in "。！？.!?" and index + 1 >= minimum_end
+    ]
+    return sentence_ends[-1] if sentence_ends else limit
+
+
+def split_chunks(
+    chunks: Iterable[DocumentChunk],
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+) -> list[DocumentChunk]:
+    """按自然边界切分长文本块并保留来源信息。"""
+    _validate_split_parameters(chunk_size, chunk_overlap)
+    result: list[DocumentChunk] = []
+    for chunk in chunks:
+        if len(chunk.text) <= chunk_size:
+            result.append(chunk)
+            continue
+
+        start = 0
+        chunk_index = 0
+        while start < len(chunk.text):
+            end = _find_split_end(
+                chunk.text,
+                start,
+                min(start + chunk_size, len(chunk.text)),
+                chunk_overlap,
+            )
+            metadata = dict(chunk.metadata)
+            metadata.update(
+                {"chunk_index": chunk_index, "char_start": start, "char_end": end}
+            )
+            result.append(
+                DocumentChunk(chunk.text[start:end], chunk.source, chunk.file_type, metadata)
+            )
+            if end == len(chunk.text):
+                break
+            start = end - chunk_overlap
+            chunk_index += 1
+    return result

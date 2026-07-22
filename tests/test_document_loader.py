@@ -4,7 +4,13 @@ import pytest
 from docx import Document
 
 import src.document_loader as document_loader
-from src.document_loader import DocumentLoadError, load_directory, load_document
+from src.document_loader import (
+    DocumentChunk,
+    DocumentLoadError,
+    load_directory,
+    load_document,
+    split_chunks,
+)
 
 
 # 验证 Markdown 原文和元数据能够完整保留。
@@ -265,3 +271,47 @@ def test_load_undecodable_markdown_raises_clear_error(tmp_path: Path):
 
     with pytest.raises(DocumentLoadError, match="Failed to decode Markdown"):
         load_document(path)
+
+
+def test_split_chunks_prefers_boundaries_and_preserves_overlap_metadata():
+    chunk = DocumentChunk("alpha\n\nbeta\n\ngamma", "source", "text", {"page_number": 1})
+
+    chunks = split_chunks([chunk], chunk_size=9, chunk_overlap=2)
+
+    assert [item.text for item in chunks] == ["alpha\n\nb", "\nbeta\n\ng", "\ngamma"]
+    assert [item.metadata for item in chunks] == [
+        {"page_number": 1, "chunk_index": 0, "char_start": 0, "char_end": 8},
+        {"page_number": 1, "chunk_index": 1, "char_start": 6, "char_end": 14},
+        {"page_number": 1, "chunk_index": 2, "char_start": 12, "char_end": 18},
+    ]
+
+
+def test_split_chunks_prefers_newlines_then_sentence_endings_then_hard_cuts():
+    newline_chunk = DocumentChunk("ab\ncd.efgh", "source", "text", {})
+    hard_cut_chunk = DocumentChunk("abcdefgh", "source", "text", {})
+
+    assert [item.text for item in split_chunks([newline_chunk], 5, 0)] == ["ab\n", "cd.", "efgh"]
+    assert [item.text for item in split_chunks([hard_cut_chunk], 3, 0)] == ["abc", "def", "gh"]
+
+
+def test_split_chunks_keeps_short_chunks_and_validates_parameters():
+    chunk = DocumentChunk("short", "source", "text", {"existing": True})
+
+    assert split_chunks([chunk], 5, 0) == [chunk]
+    for chunk_size, chunk_overlap in ((0, 0), (1, -1), (5, 5)):
+        with pytest.raises(ValueError):
+            split_chunks([chunk], chunk_size, chunk_overlap)
+
+
+def test_load_entrypoints_accept_custom_split_parameters(tmp_path: Path):
+    (tmp_path / "a.md").write_text("abcdefgh", encoding="utf-8")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "b.txt").write_text("ijklmnop", encoding="utf-8")
+
+    assert [item.text for item in load_document(tmp_path / "a.md", 3, 1)] == [
+        "abc", "cde", "efg", "gh"
+    ]
+    assert [item.text for item in load_directory(tmp_path, 4, 0)] == [
+        "abcd", "efgh", "ijkl", "mnop"
+    ]
